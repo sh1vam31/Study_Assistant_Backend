@@ -1,13 +1,9 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
+// Try Gemini first, fallback directly to Wikipedia (no OpenAI)
 export async function generateStudyContent(topic, wikiExtract, mode) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
   
-  if (!apiKey || apiKey === 'your_gemini_api_key_here') {
-    throw new Error('GEMINI_API_KEY is not set in .env file. Please add your API key.');
-  }
-
-  const genAI = new GoogleGenerativeAI(apiKey);
   const isMathMode = mode === 'math';
 
   const prompt = `You are a helpful study assistant. Based on this Wikipedia summary about "${topic}":
@@ -25,24 +21,99 @@ ${isMathMode ? '4. A "mathQuestion" object with:\n   - "question": a quantitativ
 
 Return ONLY valid JSON, no markdown formatting or code blocks.`;
 
-  try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-    
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const content = response.text().trim();
-    
-    // Remove markdown code blocks if present
-    const cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-    
-    const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
-    const jsonString = jsonMatch ? jsonMatch[0] : cleanContent;
-    
-    return JSON.parse(jsonString);
-  } catch (error) {
-    if (error.message.includes('API_KEY_INVALID')) {
-      throw new Error('Invalid Gemini API key. Please check: https://aistudio.google.com/app/apikey');
+  // Try Gemini first
+  if (geminiKey && geminiKey !== 'your_gemini_api_key_here') {
+    try {
+      console.log('Trying Gemini API...');
+      return await generateWithGemini(geminiKey, prompt);
+    } catch (error) {
+      console.error('Gemini API failed:', error.message);
+      
+      // Always fallback to Wikipedia for any Gemini error
+      console.log('🔄 Gemini failed, falling back to Wikipedia-only mode...');
+      const { generateFromWikipedia } = await import('./wikipediaService.js');
+      return generateFromWikipedia(topic, wikiExtract, mode);
     }
-    throw error;
   }
+  
+  // No Gemini key available, use Wikipedia-only mode
+  console.log('No Gemini API key configured, using Wikipedia-only mode...');
+  const { generateFromWikipedia } = await import('./wikipediaService.js');
+  return generateFromWikipedia(topic, wikiExtract, mode);
+}
+
+// Gemini API implementation
+async function generateWithGemini(apiKey, prompt) {
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const maxRetries = 2;
+  let lastError;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        console.log(`Gemini retry attempt ${attempt}/${maxRetries}`);
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      }
+
+      const model = genAI.getGenerativeModel({ 
+        model: 'gemini-2.5-flash',
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 2048,
+        }
+      });
+      
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const content = response.text().trim();
+      
+      console.log('✅ Gemini API response received');
+      
+      return parseAIResponse(content);
+    } catch (error) {
+      lastError = error;
+      console.error(`Gemini attempt ${attempt + 1} failed:`, error.message);
+      
+      // Don't retry on these errors
+      if (error.message.includes('API_KEY_INVALID')) {
+        throw new Error('Invalid Gemini API key');
+      }
+      if (error.message.includes('quota')) {
+        throw new Error('Gemini API quota exceeded');
+      }
+      
+      // Retry on overload errors
+      if (error.message.includes('overloaded') || error.message.includes('503') || error.message.includes('Service Unavailable')) {
+        if (attempt < maxRetries) {
+          continue;
+        }
+        throw new Error('Gemini API is overloaded');
+      }
+      
+      // For any other error, throw a generic message
+      throw new Error('Gemini API error: ' + error.message);
+    }
+  }
+  
+  throw lastError;
+}
+
+// OpenAI removed - using Gemini → Wikipedia fallback only
+
+// Parse and validate AI response
+function parseAIResponse(content) {
+  // Remove markdown code blocks if present
+  const cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+  
+  const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+  const jsonString = jsonMatch ? jsonMatch[0] : cleanContent;
+  
+  const parsedData = JSON.parse(jsonString);
+  
+  // Validate required fields
+  if (!parsedData.summary || !parsedData.quiz || !parsedData.studyTip) {
+    throw new Error('Invalid response format from AI');
+  }
+  
+  return parsedData;
 }
