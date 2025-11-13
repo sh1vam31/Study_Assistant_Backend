@@ -82,72 +82,61 @@ Provide your response in valid JSON format with the following structure:
 
 Return ONLY valid JSON, no markdown formatting or code blocks.`;
 
-  // Try with retries
-  const maxRetries = 3;
-  let lastError;
-
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      if (attempt > 0) {
-        console.log(`🔄 Retry attempt ${attempt}/${maxRetries - 1} for math problem...`);
-        // Wait before retry (exponential backoff)
-        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
+  // Single attempt with timeout for faster failure
+  try {
+    const genAI = new GoogleGenerativeAI(geminiKey);
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-2.5-flash',
+      generationConfig: {
+        temperature: 0.2, // Lower for more accurate math
+        maxOutputTokens: 1024, // Reduced for faster generation
+        topP: 0.8,
+        topK: 40,
       }
-
-      const genAI = new GoogleGenerativeAI(geminiKey);
-      const model = genAI.getGenerativeModel({ 
-        model: 'gemini-2.5-flash',
-        generationConfig: {
-          temperature: 0.3, // Lower temperature for more accurate math
-          maxOutputTokens: 2048,
-        }
-      });
-      
-      console.log('🧮 Solving math problem with Gemini...');
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      const content = response.text().trim();
-      
-      // Parse JSON response
-      const cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-      const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
-      const jsonString = jsonMatch ? jsonMatch[0] : cleanContent;
-      const parsedData = JSON.parse(jsonString);
-      
-      console.log('✅ Math problem solved successfully');
-      
-      // Transform to match expected format
-      return {
-        topic: problem,
-        summary: parsedData.summary || [],
-        quiz: parsedData.quiz || [],
-        studyTip: parsedData.studyTip || 'Practice similar problems to master this concept.',
-        mathQuestion: parsedData.solution ? {
-          question: problem,
-          answer: parsedData.solution.answer,
-          explanation: parsedData.solution.steps ? parsedData.solution.steps.join('\n') : parsedData.solution.explanation
-        } : undefined,
-        isMathSolution: true
-      };
-      
-    } catch (error) {
-      lastError = error;
-      console.error(`Math solver attempt ${attempt + 1} failed:`, error.message);
-      
-      // If it's a 503 or overload error, retry
-      if (error.message.includes('503') || error.message.includes('overloaded') || error.message.includes('Service Unavailable')) {
-        if (attempt < maxRetries - 1) {
-          continue; // Retry
-        }
-      } else {
-        // For other errors, don't retry
-        break;
-      }
-    }
+    });
+    
+    console.log('🧮 Solving math problem with Gemini...');
+    
+    // Set timeout for faster failure
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Request timeout')), 12000) // 12 second timeout
+    );
+    
+    const generatePromise = model.generateContent(prompt);
+    const result = await Promise.race([generatePromise, timeoutPromise]);
+    
+    const response = result.response;
+    const content = response.text().trim();
+    
+    // Parse JSON response
+    const cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+    const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+    const jsonString = jsonMatch ? jsonMatch[0] : cleanContent;
+    const parsedData = JSON.parse(jsonString);
+    
+    console.log('✅ Math problem solved successfully');
+    
+    // Transform to match expected format
+    return {
+      topic: problem,
+      summary: parsedData.summary || [],
+      quiz: parsedData.quiz || [],
+      studyTip: parsedData.studyTip || 'Practice similar problems to master this concept.',
+      mathQuestion: parsedData.solution ? {
+        question: problem,
+        answer: parsedData.solution.answer,
+        explanation: parsedData.solution.steps ? parsedData.solution.steps.join('\n') : parsedData.solution.explanation
+      } : undefined,
+      isMathSolution: true
+    };
+    
+  } catch (error) {
+    console.error('Math solver failed:', error.message);
+    // Fail fast and use fallback
   }
   
-  // If all retries failed, return a basic fallback solution
-  console.log('⚠️ Gemini failed after retries, using basic fallback...');
+  // Use basic fallback solution
+  console.log('⚠️ Gemini failed, using basic fallback...');
   return generateBasicMathSolution(problem);
 }
 

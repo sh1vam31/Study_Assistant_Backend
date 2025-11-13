@@ -42,60 +42,48 @@ Return ONLY valid JSON, no markdown formatting or code blocks.`;
   return generateFromWikipedia(topic, wikiExtract, mode);
 }
 
-// Gemini API implementation
+// Gemini API implementation with optimizations
 async function generateWithGemini(apiKey, prompt) {
   const genAI = new GoogleGenerativeAI(apiKey);
-  const maxRetries = 2;
-  let lastError;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      if (attempt > 0) {
-        console.log(`Gemini retry attempt ${attempt}/${maxRetries}`);
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-      }
-
-      const model = genAI.getGenerativeModel({ 
-        model: 'gemini-2.5-flash',
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 2048,
-        }
-      });
-      
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      const content = response.text().trim();
-      
-      console.log('✅ Gemini API response received');
-      
-      return parseAIResponse(content);
-    } catch (error) {
-      lastError = error;
-      console.error(`Gemini attempt ${attempt + 1} failed:`, error.message);
-      
-      // Don't retry on these errors
-      if (error.message.includes('API_KEY_INVALID')) {
-        throw new Error('Invalid Gemini API key');
-      }
-      if (error.message.includes('quota')) {
-        throw new Error('Gemini API quota exceeded');
-      }
-      
-      // Retry on overload errors
-      if (error.message.includes('overloaded') || error.message.includes('503') || error.message.includes('Service Unavailable')) {
-        if (attempt < maxRetries) {
-          continue;
-        }
-        throw new Error('Gemini API is overloaded');
-      }
-      
-      // For any other error, throw a generic message
-      throw new Error('Gemini API error: ' + error.message);
-    }
-  }
   
-  throw lastError;
+  try {
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-2.5-flash',
+      generationConfig: {
+        temperature: 0.5, // Lower for faster, more focused responses
+        maxOutputTokens: 1024, // Reduced from 2048 for faster generation
+        topP: 0.8, // More focused responses
+        topK: 40,
+      }
+    });
+    
+    // Set timeout for faster failure
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Request timeout')), 15000) // 15 second timeout
+    );
+    
+    const generatePromise = model.generateContent(prompt);
+    
+    const result = await Promise.race([generatePromise, timeoutPromise]);
+    const response = result.response;
+    const content = response.text().trim();
+    
+    console.log('✅ Gemini API response received');
+    
+    return parseAIResponse(content);
+  } catch (error) {
+    console.error('Gemini failed:', error.message);
+    
+    // Don't retry, fail fast and use fallback
+    if (error.message.includes('API_KEY_INVALID')) {
+      throw new Error('Invalid Gemini API key');
+    }
+    if (error.message.includes('quota')) {
+      throw new Error('Gemini API quota exceeded');
+    }
+    
+    throw new Error('Gemini API error: ' + error.message);
+  }
 }
 
 // OpenAI removed - using Gemini → Wikipedia fallback only

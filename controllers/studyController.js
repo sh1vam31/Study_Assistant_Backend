@@ -1,6 +1,7 @@
 import { fetchWikipediaSummary } from '../services/wikipediaService.js';
 import { generateStudyContent } from '../services/openaiService.js';
 import { isMathProblem, solveMathProblem } from '../services/mathSolverService.js';
+import { isWhatIsQuestion, extractTopicFromQuestion, generate7WsAndHow } from '../services/questionAnalyzerService.js';
 import StudyHistory from '../models/StudyHistory.js';
 
 export async function getStudyMaterial(req, res) {
@@ -14,33 +15,78 @@ export async function getStudyMaterial(req, res) {
       return res.status(400).json({ error: 'Topic parameter is required' });
     }
 
+    // Check if it's a "What is..." type question
+    if (isWhatIsQuestion(topic)) {
+      console.log('📝 Detected "What is..." question, using 7 W\'s framework...');
+      const extractedTopic = extractTopicFromQuestion(topic);
+      
+      try {
+        // Fetch Wikipedia data for the extracted topic
+        const wikiData = await fetchWikipediaSummary(extractedTopic);
+        
+        // Generate 7 W's and How framework answer
+        const frameworkAnswer = generate7WsAndHow(extractedTopic, wikiData.extract);
+        
+        const responseData = {
+          ...frameworkAnswer,
+          wikipediaUrl: wikiData.content_urls?.desktop?.page,
+        };
+        
+        // Send response immediately
+        res.json(responseData);
+        
+        // Save to history asynchronously
+        if (userId) {
+          const historyEntry = new StudyHistory({
+            userId,
+            topic: extractedTopic,
+            mode: 'framework',
+            studyData: {
+              summary: frameworkAnswer.summary,
+              quiz: frameworkAnswer.quiz,
+              studyTip: frameworkAnswer.studyTip,
+              wikipediaUrl: wikiData.content_urls?.desktop?.page
+            }
+          });
+          historyEntry.save()
+            .then(() => console.log('History saved successfully'))
+            .catch(err => console.error('Failed to save history:', err));
+        }
+        
+        return;
+      } catch (error) {
+        console.error('Framework generation failed:', error.message);
+        // Continue to regular flow if framework fails
+      }
+    }
+    
     // Check if it's a direct math problem
     if (isMathProblem(topic)) {
       console.log('🧮 Detected math problem, solving directly...');
       const mathSolution = await solveMathProblem(topic, mode);
       
-      // Save to history if user is authenticated
+      // Send response immediately
+      res.json(mathSolution);
+      
+      // Save to history asynchronously (don't wait)
       if (userId) {
-        try {
-          const historyEntry = new StudyHistory({
-            userId,
-            topic: topic,
-            mode: 'math',
-            studyData: {
-              summary: mathSolution.summary,
-              quiz: mathSolution.quiz,
-              studyTip: mathSolution.studyTip,
-              mathQuestion: mathSolution.mathQuestion
-            }
-          });
-          await historyEntry.save();
-          console.log('History saved successfully');
-        } catch (historyError) {
-          console.error('Failed to save history:', historyError);
-        }
+        const historyEntry = new StudyHistory({
+          userId,
+          topic: topic,
+          mode: 'math',
+          studyData: {
+            summary: mathSolution.summary,
+            quiz: mathSolution.quiz,
+            studyTip: mathSolution.studyTip,
+            mathQuestion: mathSolution.mathQuestion
+          }
+        });
+        historyEntry.save()
+          .then(() => console.log('History saved successfully'))
+          .catch(err => console.error('Failed to save history:', err));
       }
       
-      return res.json(mathSolution);
+      return;
     }
 
     // Regular Wikipedia-based flow
@@ -63,30 +109,27 @@ export async function getStudyMaterial(req, res) {
       ...studyContent
     };
 
-    // Save to history if user is authenticated
-    if (userId) {
-      try {
-        const historyEntry = new StudyHistory({
-          userId,
-          topic: wikiData.title,
-          mode,
-          studyData: {
-            summary: studyContent.summary,
-            quiz: studyContent.quiz,
-            studyTip: studyContent.studyTip,
-            mathQuestion: studyContent.mathQuestion,
-            wikipediaUrl: wikiData.content_urls?.desktop?.page
-          }
-        });
-        await historyEntry.save();
-        console.log('History saved successfully');
-      } catch (historyError) {
-        console.error('Failed to save history:', historyError);
-        // Don't fail the request if history save fails
-      }
-    }
-
+    // Send response immediately
     res.json(responseData);
+
+    // Save to history asynchronously (don't wait)
+    if (userId) {
+      const historyEntry = new StudyHistory({
+        userId,
+        topic: wikiData.title,
+        mode,
+        studyData: {
+          summary: studyContent.summary,
+          quiz: studyContent.quiz,
+          studyTip: studyContent.studyTip,
+          mathQuestion: studyContent.mathQuestion,
+          wikipediaUrl: wikiData.content_urls?.desktop?.page
+        }
+      });
+      historyEntry.save()
+        .then(() => console.log('History saved successfully'))
+        .catch(err => console.error('Failed to save history:', err));
+    }
 
   } catch (error) {
     console.error('Error in getStudyMaterial:', error.message);
