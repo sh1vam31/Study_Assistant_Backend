@@ -1,5 +1,6 @@
 import { fetchWikipediaSummary } from '../services/wikipediaService.js';
 import { generateStudyContent } from '../services/openaiService.js';
+import { isMathProblem, solveMathProblem } from '../services/mathSolverService.js';
 import StudyHistory from '../models/StudyHistory.js';
 
 export async function getStudyMaterial(req, res) {
@@ -7,19 +8,54 @@ export async function getStudyMaterial(req, res) {
     const { topic, mode = 'normal' } = req.query;
     const userId = req.user?.userId;
 
+    console.log(`Study request: topic="${topic}", mode="${mode}", userId="${userId}"`);
+
     if (!topic) {
       return res.status(400).json({ error: 'Topic parameter is required' });
     }
 
-    // Fetch Wikipedia data
+    // Check if it's a direct math problem
+    if (isMathProblem(topic)) {
+      console.log('🧮 Detected math problem, solving directly...');
+      const mathSolution = await solveMathProblem(topic, mode);
+      
+      // Save to history if user is authenticated
+      if (userId) {
+        try {
+          const historyEntry = new StudyHistory({
+            userId,
+            topic: topic,
+            mode: 'math',
+            studyData: {
+              summary: mathSolution.summary,
+              quiz: mathSolution.quiz,
+              studyTip: mathSolution.studyTip,
+              mathQuestion: mathSolution.mathQuestion
+            }
+          });
+          await historyEntry.save();
+          console.log('History saved successfully');
+        } catch (historyError) {
+          console.error('Failed to save history:', historyError);
+        }
+      }
+      
+      return res.json(mathSolution);
+    }
+
+    // Regular Wikipedia-based flow
+    console.log('Fetching Wikipedia data...');
     const wikiData = await fetchWikipediaSummary(topic);
+    console.log('Wikipedia data fetched successfully');
     
     // Generate AI content
+    console.log('Generating AI content...');
     const studyContent = await generateStudyContent(
       topic, 
       wikiData.extract, 
       mode
     );
+    console.log('AI content generated successfully');
 
     const responseData = {
       topic: wikiData.title,
@@ -43,6 +79,7 @@ export async function getStudyMaterial(req, res) {
           }
         });
         await historyEntry.save();
+        console.log('History saved successfully');
       } catch (historyError) {
         console.error('Failed to save history:', historyError);
         // Don't fail the request if history save fails
@@ -52,10 +89,29 @@ export async function getStudyMaterial(req, res) {
     res.json(responseData);
 
   } catch (error) {
-    console.error('Error in getStudyMaterial:', error);
+    console.error('Error in getStudyMaterial:', error.message);
+    console.error('Stack:', error.stack);
+    
+    // Send more specific error messages
+    if (error.message.includes('not found on Wikipedia')) {
+      return res.status(404).json({ 
+        error: 'Topic not found',
+        message: error.message 
+      });
+    }
+    
+    if (error.message.includes('API key')) {
+      return res.status(500).json({ 
+        error: 'API configuration error',
+        message: 'Please contact administrator' 
+      });
+    }
+    
     res.status(500).json({ 
       error: 'Failed to generate study material',
-      message: error.message 
+      message: process.env.NODE_ENV === 'production' 
+        ? 'An error occurred while generating content' 
+        : error.message 
     });
   }
 }

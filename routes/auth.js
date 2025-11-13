@@ -7,6 +7,50 @@ const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 const JWT_EXPIRES_IN = '7d';
 
+// Allowed email domains for signup (only these exact domains are allowed)
+const ALLOWED_EMAIL_DOMAINS = [
+  'gmail.com',
+  'yahoo.com',
+  'yahoo.co.in',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'icloud.com',
+  'me.com',
+  'protonmail.com',
+  'proton.me',
+  'mail.com',
+  'aol.com',
+  'zoho.com',
+  // Educational domains
+  'edu',
+  'ac.in',
+  'edu.in',
+  // Add more trusted domains as needed
+];
+
+// Function to validate email domain
+function isValidEmailDomain(email) {
+  const emailLower = email.toLowerCase();
+  const domain = emailLower.split('@')[1];
+  
+  if (!domain) {
+    return false;
+  }
+  
+  // Check for exact match first
+  if (ALLOWED_EMAIL_DOMAINS.includes(domain)) {
+    return true;
+  }
+  
+  // Check if it's a subdomain of an educational institution (e.g., student.university.edu)
+  if (domain.endsWith('.edu') || domain.endsWith('.ac.in') || domain.endsWith('.edu.in')) {
+    return true;
+  }
+  
+  return false;
+}
+
 // Signup
 router.post('/signup', async (req, res) => {
   try {
@@ -14,6 +58,20 @@ router.post('/signup', async (req, res) => {
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    // Validate email domain
+    if (!isValidEmailDomain(email)) {
+      const domain = email.split('@')[1];
+      return res.status(400).json({ 
+        error: `Email domain "${domain}" is not allowed. Please use a valid email provider (e.g., Gmail, Yahoo, Outlook, etc.)` 
+      });
     }
 
     if (password.length < 6) {
